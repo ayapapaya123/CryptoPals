@@ -1,10 +1,10 @@
 from base64 import b64encode
-from string import ascii_lowercase
 from Set1.challenge_consts import letterFrequency
 import binascii
 import string
 import base64
 from Crypto.Cipher import AES
+from collections import Counter
 
 
 def hex_to_base64(hex_string: str) -> str:
@@ -28,24 +28,29 @@ def single_byte_xor_cryptanalysis(ciphertext):
         key = bytes([key_byte]) * len_ciphertext
         candidate_plaintext = fixed_xor(ciphertext, key)
 
-        score = float(0)
-        for pt_byte in candidate_plaintext:
-            c = chr(pt_byte)
-            if c in string.ascii_lowercase:
-                score += letterFrequency[c]
-            # Upper-case letters count slightly less than lower-case
-            if c in string.ascii_uppercase:
-                score += letterFrequency[c.lower()] * 0.75
-        score /= len(ciphertext)  # Normalize score over length of plaintext
-        # Decrement score by 5% for every character that is not a letter, number, or common punctuation
-        for pt_byte in candidate_plaintext:
-            if chr(pt_byte) not in (string.ascii_letters + " ,.'?!\"\n"):
-                score *= 0.95
+        score = detect_plaintext(candidate_plaintext)
         plaintexts_dict[candidate_plaintext] = score
         keys_dict[key_byte] = score
     return max(plaintexts_dict, key=plaintexts_dict.get), \
            max(keys_dict, key=keys_dict.get), \
            max(plaintexts_dict.values())
+
+
+def detect_plaintext(candidate_plaintext):
+    score = float(0)
+    for pt_byte in candidate_plaintext:
+        c = chr(pt_byte)
+        if c in string.ascii_lowercase:
+            score += letterFrequency[c]
+        # Upper-case letters count slightly less than lower-case
+        if c in string.ascii_uppercase:
+            score += letterFrequency[c.lower()] * 0.75
+    score /= len(candidate_plaintext)  # Normalize score over length of plaintext
+    # Decrement score by 5% for every character that is not a letter, number, or common punctuation
+    for pt_byte in candidate_plaintext:
+        if chr(pt_byte) not in (string.ascii_letters + " ,.'?!\"\n"):
+            score *= 0.95
+    return score
 
 
 def detect_single_character_xor(file_obj):
@@ -100,7 +105,6 @@ def transpose_bytes(input_bytes, block_size):
     return bytes_transposed
 
 def break_repeating_key_xor(ciphertext_bytes):
-    # file_obj = open("files/set1_challenge6.txt", "r").read().replace('\n', '')
     ciphertext_bytes = base64.b64decode(ciphertext_bytes)
     
     most_possible_keysize = get_keysize(ciphertext_bytes)[:5]
@@ -117,8 +121,52 @@ def break_repeating_key_xor(ciphertext_bytes):
     
     return decrypts[0]
 
-def aes_in_ecb_mode(ciphertext_bytes):
-    ciphertext_bytes = base64.b64decode(ciphertext_bytes)
-    key = bytes("YELLOW SUBMARINE", "ascii")
+def decrypt_aes_in_ecb_mode(ciphertext_bytes: bytes, key: bytes) -> bytes:
+    """
+    Decrypt a message by using AES in ECB mode with the provided key
+
+    Args:
+        ciphertext_bytes (bytes): bytes to decrypt
+        key (bytes): encryption key
+
+    Returns:
+        bytes: decrypted block
+    """
     cipher = AES.new(key, AES.MODE_ECB)
     return cipher.decrypt(ciphertext_bytes)
+
+def encrypt_aes_in_ecb_mode(message_bytes: bytes, key: bytes) -> bytes:
+    """
+    Encrypt a message by using AES in ECB mode with the provided key
+
+    Args:
+        message_bytes (bytes): bytes to encrypt
+        key (bytes): encryption key
+
+    Returns:
+        bytes: encrypted block
+    """
+    cipher = AES.new(key, AES.MODE_ECB)
+    return cipher.encrypt(message_bytes)
+
+def detect_aes_ecb(file_obj):
+    """ Detecting AES in ECB mode. We received a file of randomly generated hex encoded string and one ECB encrypted string.
+    ECB mode is stateless and deterministic meaning the same 16 bytes of plaintext will result in the same ciphertext. Therefore
+    we will search for repeating blocks in the string and find the encrypted string and that is likely the encrypted line
+
+    Args:
+        file_obj (_type_): File containing the lines of text
+
+    Returns:
+        str: Line suspected of being encrypted using ECB
+    """
+    lines = file_obj.readlines()
+    candidate_ciphertext = {}
+    for line in lines:
+        line = line.strip('\n')
+        line_bytes = binascii.unhexlify(line)
+        blocks = [line_bytes[start:start+16] for start in range(0, len(line_bytes), 16)]
+        count = Counter(blocks)
+        candidate_ciphertext[line] = max(count.values())
+    
+    return max(candidate_ciphertext, key=candidate_ciphertext.get)
